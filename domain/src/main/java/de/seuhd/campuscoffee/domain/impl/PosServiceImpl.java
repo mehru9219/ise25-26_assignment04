@@ -81,23 +81,141 @@ public class PosServiceImpl implements PosService {
 
     /**
      * Converts an OSM node to a POS domain object.
-     * Note: This is a stub implementation and should be replaced with real mapping logic.
+     * Maps OSM tags to POS fields and performs necessary transformations.
+     *
+     * @param osmNode The OSM node data to convert
+     * @return A POS object ready for persistence
+     * @throws OsmNodeMissingFieldsException if required fields are missing
      */
     private @NonNull Pos convertOsmNodeToPos(@NonNull OsmNode osmNode) {
-        if (osmNode.nodeId().equals(5589879349L)) {
-            return Pos.builder()
-                    .name("Rada Coffee & Rösterei")
-                    .description("Caffé und Rösterei")
-                    .type(PosType.CAFE)
-                    .campus(CampusType.ALTSTADT)
-                    .street("Untere Straße")
-                    .houseNumber("21")
-                    .postalCode(69117)
-                    .city("Heidelberg")
-                    .build();
-        } else {
+        log.debug("Converting OSM node {} to POS", osmNode.nodeId());
+
+        // Validate required fields
+        if (osmNode.name() == null || osmNode.name().isBlank()) {
+            log.error("OSM node {} is missing required field: name", osmNode.nodeId());
             throw new OsmNodeMissingFieldsException(osmNode.nodeId());
         }
+        if (osmNode.amenity() == null || osmNode.amenity().isBlank()) {
+            log.error("OSM node {} is missing required field: amenity", osmNode.nodeId());
+            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
+        }
+        if (osmNode.addrCity() == null || osmNode.addrCity().isBlank()) {
+            log.error("OSM node {} is missing required field: addr:city", osmNode.nodeId());
+            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
+        }
+
+        // Map amenity type to PosType
+        PosType posType = mapAmenityToPosType(osmNode.amenity());
+        log.debug("Mapped amenity '{}' to PosType.{}", osmNode.amenity(), posType);
+
+        // Parse postal code
+        Integer postalCode = parsePostalCode(osmNode.addrPostcode(), osmNode.nodeId());
+
+        // Determine campus from postal code
+        CampusType campus = determineCampus(postalCode, osmNode.nodeId());
+        log.debug("Determined campus {} from postal code {}", campus, postalCode);
+
+        // Build description: use OSM description if available, otherwise generate from amenity
+        String description = osmNode.description() != null && !osmNode.description().isBlank()
+                ? osmNode.description()
+                : generateDescriptionFromAmenity(osmNode.amenity());
+
+        // Build and return the POS object
+        return Pos.builder()
+                .name(osmNode.name())
+                .description(description)
+                .type(posType)
+                .campus(campus)
+                .street(osmNode.addrStreet())
+                .houseNumber(osmNode.addrHouseNumber())
+                .postalCode(postalCode)
+                .city(osmNode.addrCity())
+                .build();
+    }
+
+    /**
+     * Maps OSM amenity tag values to PosType enum.
+     *
+     * @param amenity The OSM amenity tag value
+     * @return The corresponding PosType
+     */
+    private @NonNull PosType mapAmenityToPosType(@NonNull String amenity) {
+        return switch (amenity.toLowerCase()) {
+            case "cafe", "coffee_shop" -> PosType.CAFE;
+            case "bakery" -> PosType.BAKERY;
+            case "vending_machine" -> PosType.VENDING_MACHINE;
+            case "cafeteria", "restaurant", "fast_food", "bar", "pub" -> PosType.CAFETERIA;
+            default -> {
+                log.warn("Unknown amenity type '{}', defaulting to CAFE", amenity);
+                yield PosType.CAFE;
+            }
+        };
+    }
+
+    /**
+     * Parses postal code string to Integer.
+     *
+     * @param postcodeStr The postal code string from OSM
+     * @param nodeId The node ID for error reporting
+     * @return The postal code as Integer, or null if not parseable
+     */
+    private Integer parsePostalCode(String postcodeStr, Long nodeId) {
+        if (postcodeStr == null || postcodeStr.isBlank()) {
+            log.warn("OSM node {} has no postal code", nodeId);
+            return null;
+        }
+
+        try {
+            return Integer.parseInt(postcodeStr.trim());
+        } catch (NumberFormatException e) {
+            log.warn("OSM node {} has invalid postal code '{}', cannot parse to integer", nodeId, postcodeStr);
+            return null;
+        }
+    }
+
+    /**
+     * Determines campus based on postal code.
+     * Uses Heidelberg postal code mapping:
+     * - 69117 → ALTSTADT (old town)
+     * - 69115 → BERGHEIM
+     * - 69120, 69121 → INF (Informatik campus)
+     *
+     * @param postalCode The postal code
+     * @param nodeId The node ID for logging
+     * @return The determined campus, defaults to ALTSTADT if unknown
+     */
+    private @NonNull CampusType determineCampus(Integer postalCode, Long nodeId) {
+        if (postalCode == null) {
+            log.warn("OSM node {} has no postal code, defaulting to ALTSTADT", nodeId);
+            return CampusType.ALTSTADT;
+        }
+
+        return switch (postalCode) {
+            case 69117 -> CampusType.ALTSTADT;
+            case 69115 -> CampusType.BERGHEIM;
+            case 69120, 69121 -> CampusType.INF;
+            default -> {
+                log.warn("Unknown postal code {} for node {}, defaulting to ALTSTADT", postalCode, nodeId);
+                yield CampusType.ALTSTADT;
+            }
+        };
+    }
+
+    /**
+     * Generates a description from the amenity type if no explicit description is provided.
+     *
+     * @param amenity The amenity type
+     * @return A generated description
+     */
+    private @NonNull String generateDescriptionFromAmenity(@NonNull String amenity) {
+        return switch (amenity.toLowerCase()) {
+            case "cafe", "coffee_shop" -> "Coffee shop";
+            case "bakery" -> "Bakery";
+            case "vending_machine" -> "Vending machine";
+            case "cafeteria" -> "Cafeteria";
+            case "restaurant" -> "Restaurant";
+            default -> "Point of sale";
+        };
     }
 
     /**
